@@ -39,314 +39,114 @@ ADDR_AUTODEC         = "111"
 
 
 class Instruction:
+    """Parse a 32-bit instruction word for runtime execution."""
 
-    # ──────────────────────────────────────────────────────────
-    #  decodeMSG
-    # ──────────────────────────────────────────────────────────
-    @staticmethod
-    def decodeMSG(msg):
-        """
-        Converts special escape sequences inside a message string
-        back to their real characters.
+    OPCODE_NAMES = {
+        (0, 0, 0): 'PRNT',
+        (0, 0, 1): 'EOP',
+        (0, 0, 2): 'FUNC',
+        (0, 1, 0): 'MOV',
+        (0, 1, 1): 'CALL',
+        (0, 1, 2): 'RET',
+        (0, 1, 3): 'SCAN',
+        (1, 1, 0): 'MOD',
+        (1, 1, 1): 'ADD',
+        (1, 1, 2): 'SUB',
+        (1, 1, 3): 'MUL',
+        (1, 1, 4): 'DIV',
+        (1, 0, 0): 'JEQ',
+        (1, 0, 1): 'JNE',
+        (1, 0, 2): 'JLT',
+        (1, 0, 3): 'JLE',
+        (1, 0, 4): 'JGT',
+        (1, 0, 5): 'JGE',
+        (1, 0, 6): 'JMP',
+    }
 
-        Rules (applied in order):
-          -_   →  newline   (must come before single - and _ checks)
-          -    →  space
-          _    →  tab
-          minus  →  -
-          under  →  _
-        """
-        msg = msg.replace("-_", "\n")   # dash+underscore  → newline
-        msg = msg.replace("-",  " ")    # dash alone       → space
-        msg = msg.replace("_",  "\t")   # underscore alone → tab
-        msg = msg.replace("minus", "-") # word 'minus'     → dash
-        msg = msg.replace("under", "_") # word 'under'     → underscore
-        return msg
+    MODE_NAMES = {
+        '000': 'REGISTER',
+        '001': 'REGISTER_INDIRECT',
+        '010': 'DIRECT',
+        '011': 'INDIRECT',
+        '100': 'INDEXED_VAR',
+        '101': 'INDEXED_INT',
+        '110': 'AUTOINC',
+        '111': 'AUTODEC',
+    }
 
-    # ──────────────────────────────────────────────────────────
-    #  encodeOp  –  convert one operand string to a 10-bit code
-    # ──────────────────────────────────────────────────────────
-    @staticmethod
-    def encodeOp(operand):
-        """
-        Converts a human-readable operand (e.g. 'R1', '(R2)', '3.5',
-        '(XR+)', '(B1Z)') into a 10-bit binary string:
-            [3-bit addressing mode][7-bit address/value]
+    def __init__(self, word):
+        if not isinstance(word, str):
+            raise ValueError('Instruction word must be a bit string.')
+        if len(word) != Length.instrxn:
+            raise ValueError(
+                f'Instruction word must be {Length.instrxn} bits, got {len(word)}.')
 
-        Special case – Immediate:
-            If the operand is a plain number, return its 16-bit
-            Half Precision binary (used differently by encode()).
+        self.raw = word
+        self.opcode_bits = word[:5]
+        self.ib = word[5]
+        self.op1_bits = word[6:16]
+        self.rb = word[16]
+        self.op2_bits = word[17:27]
+        self.extra_bits = word[27:32]
 
-        Special case – Message 'M:...':
-            Stores the message text and returns None (optional feature).
-        """
+        if word == '0' * Length.instrxn:
+            self.opcode = 0
+            self.mnemonic = 'EOP'
+            self.op1_mode = '000'
+            self.op1_addr = 0
+            self.op2_mode = '000'
+            self.op2_addr = 0
+            self.destination = 0
+            return
 
-        operand = str(operand).strip()
+        ex = int(self.opcode_bits[0], 2)
+        wr = int(self.opcode_bits[1], 2)
+        cat = int(self.opcode_bits[2:], 2)
+        self.opcode = int(self.opcode_bits, 2)
+        self.opcode_tuple = (ex, wr, cat)
+        self.mnemonic = self.OPCODE_NAMES.get(self.opcode_tuple, 'UNKNOWN')
 
-        # ── 1. IMMEDIATE  (plain number) ──────────────────────
-        try:
-            num = float(operand)
-            # Return the full 16-bit HP binary; encode() will place
-            # this in the Extra bits field with ib=1.
-            return HalfPrecision.hpdec2bin(num).zfill(Length.precision)
-        except ValueError:
-            pass  # not a number → keep going
+        self.op1_mode = self.op1_bits[:3]
+        self.op1_addr = int(self.op1_bits[3:], 2)
+        self.op2_mode = self.op2_bits[:3]
+        self.op2_addr = int(self.op2_bits[3:], 2)
+        self.destination = self.op1_addr
 
-        # ── 2. MESSAGE  'M:some_text' ─────────────────────────
-        if operand.startswith("M:"):
-            msg_text = Instruction.decodeMSG(operand[2:])
-            # Store message in the special MSG dictionary
-            msg_index = variable.data["MI"]
-            variable.data["MSG"][msg_index] = msg_text
-            variable.data["MI"] += 1
-            # Messages are handled outside ISA encoding
+    def __repr__(self):
+        return (f'<Instruction {self.mnemonic} op1={self.op1_mode}:{self.op1_addr} '
+                f'op2={self.op2_mode}:{self.op2_addr} ib={self.ib} rb={self.rb}>')
+
+    def get_operand_value(self):
+        if self.raw == '0' * Length.instrxn:
             return None
 
-        # ── 3. OPERANDS WITH PARENTHESES  e.g. (R1), (XR+), (B2Z) ──
-        if "(" in operand and ")" in operand:
-            # Strip the parentheses
-            inner = operand.replace("(", "").replace(")", "")
+        if self.ib == '1':
+            hp_bits = self.ib + self.op2_bits + self.extra_bits
+            return HalfPrecision.hpbin2dec(hp_bits)
 
-            # ── 3a. Indexed / Based / Relative  (contain X, Y, or Z) ──
-            if "X" in inner or "Y" in inner or "Z" in inner:
-                if   "Z" in inner:
-                    mode_prefix = "1"          # Relative
-                    inner = inner.replace("Z", "")
-                elif "Y" in inner:
-                    mode_prefix = "01"         # Based  (rb handled in encode)
-                    inner = inner.replace("Y", "")
-                else:  # X
-                    mode_prefix = ""           # Indexed (mode bits set below)
-                    inner = inner.replace("X", "")
+        mode = self.op2_mode
+        addr = self.op2_addr
 
-                # What remains is either an integer, a register (contains R/PC/ACC),
-                # or a memory address (pure digits treated as memory)
-                try:
-                    # Integer displacement
-                    disp_val = int(inner)
-                    if disp_val >= 0:
-                        disp_type = "0"
-                    else:
-                        disp_type = "1"
-                        disp_val = abs(disp_val)
-                    addr_bits = format(disp_val, "06b")   # 6-bit displacement
+        if mode == '000':
+            return register.load(addr)
+        if mode == '001':
+            return memory.load(register.load(addr))
+        if mode == '010':
+            return memory.load(addr)
+        if mode == '011':
+            return memory.load(memory.load(addr))
+        if mode == '110':
+            mem_addr = register.load(addr)
+            value = memory.load(mem_addr)
+            register.store(addr, mem_addr + 1)
+            return value
+        if mode == '111':
+            mem_addr = register.load(addr) - 1
+            register.store(addr, mem_addr)
+            return memory.load(mem_addr)
 
-                    if mode_prefix == "":
-                        # Indexed with integer displacement
-                        mode = ADDR_INDEXED_INT
-                    else:
-                        mode = mode_prefix  # Relative or Based (caller sets rb)
+        raise ValueError(f'Unsupported operand mode: {mode}')
 
-                    return (mode + disp_type + addr_bits).zfill(Length.operand)
-
-                except ValueError:
-                    # Register or memory variable displacement
-                    is_register = (
-                        inner.startswith("R") or
-                        inner in ("PC", "ACC", "XR", "BR", "IR", "JR", "CR")
-                    )
-                    disp_type = "0" if is_register else "1"
-                    addr = variable.load(inner)          # numeric address
-                    addr_bits = format(int(addr), "06b") # 6-bit
-
-                    if mode_prefix == "":
-                        mode = ADDR_INDEXED_VAR
-                    else:
-                        mode = mode_prefix
-
-                    return (mode + disp_type + addr_bits).zfill(Length.operand)
-
-            # ── 3b. Auto-increment  e.g. (R3+) ───────────────
-            elif "+" in inner:
-                inner = inner.replace("+", "")
-                mode = ADDR_AUTOINC
-
-            # ── 3c. Auto-decrement  e.g. (R3-) ───────────────
-            elif "-" in inner:
-                inner = inner.replace("-", "")
-                mode = ADDR_AUTODEC
-
-            # ── 3d. Register-indirect or Indirect ─────────────
-            elif (inner.startswith("R") or
-                  inner in ("PC", "ACC", "XR", "BR", "IR", "JR", "CR")):
-                mode = ADDR_REG_INDIRECT
-            else:
-                mode = ADDR_INDIRECT  # indirect via memory address
-
-            # Get the numeric address from the variable table
-            addr = variable.load(inner)
-            addr_bits = format(int(addr), "07b")   # 7-bit address
-            return (mode + addr_bits).zfill(Length.operand)
-
-        # ── 4. NO PARENTHESES  –  Register or Direct ─────────
-        is_register = (
-            operand.startswith("R") or
-            operand in ("PC", "ACC", "XR", "BR", "IR", "JR", "CR")
-        )
-        if is_register:
-            mode = ADDR_REGISTER
-        else:
-            mode = ADDR_DIRECT
-
-        addr = variable.load(operand)
-        addr_bits = format(int(addr), "07b")       # 7-bit address
-        return (mode + addr_bits).zfill(Length.operand)
-
-    # ──────────────────────────────────────────────────────────
-    #  encode  –  convert one instruction line to 32-bit code
-    # ──────────────────────────────────────────────────────────
-    @staticmethod
-    def encode(inst):
-        """
-        Converts a single instruction string like 'ADD R1 R2' into a
-        32-bit Instruction Code binary string.
-
-        Instruction Code layout (32 bits):
-          [0]      Execute bit
-          [1]      Write bit
-          [2-4]    Category Code  (3 bits)
-          [5]      Immediate bit (ib)
-          [6-8]    Op1 Mode      (3 bits)
-          [9-15]   Op1 Addr      (7 bits)
-          [16]     Relative bit (rb)
-          [17-19]  Op2 Mode      (3 bits)
-          [20-26]  Op2 Addr      (7 bits)
-          [27-31]  Extra bits    (5 bits, used for immediate value tail)
-        """
-
-        parts = inst.strip().split()
-        operation = parts[0].upper()
-
-        # ── FUNC / EOP  →  all-zero instruction ──────────────
-        if operation in ("FUNC", "EOP"):
-            return "0" * Length.instrxn
-
-        # ── Initialise ib and rb to zero ─────────────────────
-        ib = "0"   # immediate bit
-        rb = "0"   # relative/based bit
-
-        # ── Expand shorthand operations into primitives ───────
-        # We may produce TWO instructions (e.g. CALL, RET).
-        # Each expansion returns a list of encoded instruction strings.
-
-        extra_instructions = []  # additional encoded instructions
-
-        if operation == "CB":
-            # CB B3  →  ADD BR B3   (adds BR to block address)
-            operand1 = "BR"
-            operand2 = parts[1]
-            operation = "ADD"
-            parts = ["ADD", operand1, operand2]
-
-        elif operation == "CF":
-            # CF F2  →  ADD BR F2
-            operand1 = "BR"
-            operand2 = parts[1]
-            operation = "ADD"
-            parts = ["ADD", operand1, operand2]
-
-        elif operation == "CMP":
-            # CMP R1  →  SUB JR R1
-            operation = "SUB"
-            parts = ["SUB", "JR", parts[1]]
-
-        elif operation in ("JEQ","JNE","JLT","JLE","JGT","JGE","JMP"):
-            # J** B3  →  compare JR to 0, then jump
-            # Encoded as a jump; condition held in category code
-            pass  # category code already encodes the condition
-
-        elif operation == "ADDPC":
-            # ADDPC dest op2  →  MOV dest (op2 relative)
-            operation = "MOV"
-            # op2 stays as-is; encode() will handle it
-
-        elif operation == "CALL":
-            # CALL F2 →
-            #   1. MOV CR PC        (save current PC to CR)
-            #   2. MOV PC F2        (jump to function block)
-            mov_cr_pc = Instruction.encode("MOV CR PC")
-            extra_instructions.append(mov_cr_pc)
-            operation = "MOV"
-            parts = ["MOV", "PC", parts[1]]
-
-        elif operation == "RET":
-            # RET R1 →
-            #   1. MOV PC CR        (return to caller)
-            #   2. MOV ACC R1       (put return value in ACC)
-            mov_pc_cr = Instruction.encode("MOV PC CR")
-            extra_instructions.append(mov_pc_cr)
-            operation = "MOV"
-            parts = ["MOV", "ACC", parts[1]]
-
-        # ── Build OpCode ──────────────────────────────────────
-        opcode = None
-        for (ex, wr), (ew_bits, cat_map) in operationCodes.items():
-            if operation in cat_map:
-                opcode = ew_bits + cat_map[operation]  # 5-bit opcode
-                break
-
-        if opcode is None:
-            raise ValueError(f"Unknown operation: {operation}")
-
-        # ── Encode operands ───────────────────────────────────
-        op1_encoded = ""
-        op2_encoded = ""
-        extra_bits  = "0" * 5   # bits 27-31
-
-        # Operand 1
-        if len(parts) > 1:
-            op1_encoded = Instruction.encodeOp(parts[1])
-
-        # Operand 2
-        if len(parts) > 2:
-            op2_raw = Instruction.encodeOp(parts[2])
-
-            # Check if operand 2 is Immediate (16-bit HP binary returned)
-            if op2_raw is not None and len(op2_raw) == Length.precision:
-                ib = "1"
-                # The HP binary goes into bits 17-31 (15 bits).
-                # We take the last 15 bits of the 16-bit HP value.
-                hp_val = op2_raw
-                op2_mode_bits = "000"               # mode field (bits 17-19)
-                op2_addr_bits = hp_val[:7]           # bits 20-26
-                extra_bits    = hp_val[7:12]         # bits 27-31  (5 bits)
-                op2_encoded   = op2_mode_bits + op2_addr_bits
-            else:
-                # Check if it's Relative or Based (rb=1)
-                # encodeOp returns a mode prefix of "1xx" for relative,
-                # "01x" for based — we detect by checking the mode nibble.
-                if op2_raw is not None:
-                    mode_nibble = op2_raw[:4]
-                    # Relative modes start with "1" in our encoding above
-                    # Based modes start with "01"
-                    # We set rb=1 for both; they are distinguished by mode bits
-                    if mode_nibble[0] == "1" or mode_nibble[:2] == "01":
-                        rb = "1"
-                op2_encoded = op2_raw if op2_raw else "0" * Length.operand
-
-        # ── Assemble the 32-bit instruction ───────────────────
-        #
-        #  opcode      = 5 bits  (bits 0-4)
-        #  ib          = 1 bit   (bit  5)
-        #  op1_encoded = 10 bits (bits 6-15)  [3-bit mode + 7-bit addr]
-        #  rb          = 1 bit   (bit  16)
-        #  op2_encoded = 10 bits (bits 17-26) [3-bit mode + 7-bit addr]
-        #  extra_bits  = 5 bits  (bits 27-31)
-        #
-        # Pad missing fields with zeros
-        op1_encoded = op1_encoded.zfill(Length.operand) if op1_encoded else "0" * Length.operand
-        op2_encoded = op2_encoded.zfill(Length.operand) if op2_encoded else "0" * Length.operand
-
-        instruction_code = opcode + ib + op1_encoded + rb + op2_encoded + extra_bits
-
-        # Ensure exactly 32 bits
-        instruction_code = instruction_code.zfill(Length.instrxn)
-
-        # If there were extra instructions (CALL/RET), return them joined
-        if extra_instructions:
-            return extra_instructions + [instruction_code]
-
-        return instruction_code
 
     # ──────────────────────────────────────────────────────────
     #  encodeProgram  –  encode all instructions into memory
