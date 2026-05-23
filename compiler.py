@@ -120,7 +120,7 @@ class Instruction:
         if self.raw == '0' * Length.instrxn:
             return None
 
-        if self.ib == '1':
+        if self.rb == '1':
             hp_bits = self.ib + self.op2_bits + self.extra_bits
             return HalfPrecision.hpbin2dec(hp_bits)
 
@@ -146,6 +146,71 @@ class Instruction:
             return memory.load(mem_addr)
 
         raise ValueError(f'Unsupported operand mode: {mode}')
+
+    @staticmethod
+    def encodeOp(operation):
+        operation = operation.upper()
+        for (ex, wr), (ew_bits, cat_map) in operationCodes.items():
+            if operation in cat_map:
+                return ew_bits + cat_map[operation]
+        raise ValueError(f'Unknown operation: {operation}')
+
+    @staticmethod
+    def resolve_address(token):
+        token = token.upper()
+        if token.startswith('R') and token[1:].isdigit():
+            addr_value = variable.load(token)
+        elif token in variable.data:
+            addr_value = variable.load(token)
+        else:
+            raise ValueError(f'Unknown operand address: {token}')
+
+        if isinstance(addr_value, str):
+            return int(HalfPrecision.hpbin2dec(addr_value))
+        return int(addr_value)
+
+    @staticmethod
+    def encode(line):
+        parts = line.strip().split()
+        if not parts:
+            raise ValueError('Empty instruction line.')
+
+        op = parts[0].upper()
+        if op == 'EOP':
+            return '0' * Length.instrxn
+
+        opcode = Instruction.encodeOp(op)
+        if len(parts) < 2:
+            raise ValueError(f'Instruction {op} requires operands.')
+
+        dest_token = parts[1]
+        src_token = parts[2] if len(parts) > 2 else None
+        dest_mode = '000'
+        dest_addr = Instruction.resolve_address(dest_token)
+        dest_bits = dest_mode + Length.addZeros(dest_addr, Length.opAddr)
+
+        op2_bits = '0' * Length.operand
+        extra_bits = '0' * 5
+        rb = '0'
+
+        if src_token is not None:
+            if src_token.replace('.', '', 1).lstrip('+-').isdigit():
+                try:
+                    value = int(src_token)
+                except ValueError:
+                    value = float(src_token)
+                hp = HalfPrecision.hpdec2bin(value)
+                ib = hp[0]
+                rb = '1'
+                op2_bits = hp[1:11]
+                extra_bits = hp[11:]
+            else:
+                ib = '0'
+                src_mode = '000'
+                src_addr = Instruction.resolve_address(src_token)
+                op2_bits = src_mode + Length.addZeros(src_addr, Length.opAddr)
+
+        return opcode + ib + dest_bits + rb + op2_bits + extra_bits
 
 
     # ──────────────────────────────────────────────────────────

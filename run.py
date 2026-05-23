@@ -81,7 +81,7 @@ class Except(Exception):
         return self.ret
 class Program:
 
-    def __init__(self, start_address=None, max_steps=1000):
+    def __init__(self, program=None, start_address=None, max_steps=1000):
         self.start_address = (
             start_address if start_address is not None
             else Access.data('PC', ['var', 'reg']))
@@ -91,6 +91,8 @@ class Program:
         self.exception = Except('No exception', occur=False)
         self.steps = 0
         self.reset()
+        if program is not None:
+            self.encode_program(program)
 
     def reset(self, pc=None):
         self.halted = False
@@ -114,71 +116,152 @@ class Program:
     def decode(self, raw_instruction):
         return Instruction(raw_instruction)
 
+    @staticmethod
+    def exception(name, value):
+        if name == 'DivByZero':
+            op1, op2 = value
+            exc = Except('Division by zero!')
+            if op2 == 0:
+                exc.setReturn('Infinity' if op1 == 0 else 'undefined')
+            return exc
+        return Except('No exception', occur=False)
+
+    def encode_program(self, program):
+        address = self.start_address
+        for line in program:
+            encoded = Instruction.encode(line)
+            encoded_list = encoded if isinstance(encoded, list) else [encoded]
+            for instruction in encoded_list:
+                Access.store('mem', address, instruction)
+                address += 1
+
+    def write(self, dest, src, movecode=0):
+        if movecode == 1:
+            Access.store('reg', variable.load('CR'), self.read_pc())
+        elif movecode == 2:
+            self.write_pc(register.load(variable.load('CR')))
+        if isinstance(dest, tuple):
+            typ, addr = dest
+            Access.store(typ, addr, src)
+        else:
+            raise ValueError('Invalid write destination')
+
+    def getOp(self, mode, addr):
+        hp_addr = HalfPrecision.hpdec2bin(addr)
+        if mode == '000':
+            effective, value, _ = AddressingMode.register(hp_addr)
+            return ('reg', effective, value)
+        if mode == '001':
+            effective, value = AddressingMode.register_indirect(hp_addr)
+            return ('mem', effective, value)
+        if mode == '010':
+            effective, value = AddressingMode.direct(hp_addr)
+            return ('mem', effective, value)
+        if mode == '011':
+            effective, value = AddressingMode.indirect(hp_addr)
+            return ('mem', effective, value)
+        if mode == '100' or mode == '101':
+            effective, value = AddressingMode.indexed(addr)
+            return ('mem', effective, value)
+        if mode == '110':
+            effective, value = AddressingMode.autoinc(hp_addr)
+            return ('mem', effective, value)
+        if mode == '111':
+            effective, value = AddressingMode.autodec(hp_addr)
+            return ('mem', effective, value)
+        raise ValueError(f'Unsupported operand mode: {mode}')
+
     def execute(self, instruction):
-        if instruction.raw == '0' * Length.instrxn or instruction.mnemonic == 'EOP':
+        if instruction.raw == '0' * Length.instrxn or instruction.mnemonic in ('EOP', 'FUNC'):
             self.halted = True
             return False
 
-        operand = instruction.get_operand_value()
-        dest = instruction.destination
+        mnemonic = instruction.mnemonic
+        op1 = self.getOp(instruction.op1_mode, instruction.op1_addr)
+        op2_value = instruction.get_operand_value()
 
-        if instruction.opcode == 0:  # NOP
+        if mnemonic == 'MOV':
+            self.write((op1[0], op1[1]), op2_value)
             return False
 
-        if instruction.opcode == 1:  # LOAD
-            Access.store('reg', dest, operand)
+        if mnemonic == 'ADD':
+            result = op1[2] + op2_value
+            self.write((op1[0], op1[1]), result)
             return False
 
-        if instruction.opcode == 2:  # STORE
-            Access.store('mem', dest, operand)
+        if mnemonic == 'SUB':
+            result = op1[2] - op2_value
+            self.write((op1[0], op1[1]), result)
             return False
 
-        if instruction.opcode == 3:  # ADD
-            current = register.load(dest)
-            result = current + operand
-            Access.store('reg', dest, result)
+        if mnemonic == 'MUL':
+            result = op1[2] * op2_value
+            self.write((op1[0], op1[1]), result)
             return False
 
-        if instruction.opcode == 4:  # SUB
-            current = register.load(dest)
-            result = current - operand
-            Access.store('reg', dest, result)
+        if mnemonic == 'DIV':
+            if op2_value == 0:
+                raise Program.exception('DivByZero', (op1[2], op2_value))
+            result = op1[2] / op2_value
+            self.write((op1[0], op1[1]), result)
             return False
 
-        if instruction.opcode == 5:  # MUL
-            current = register.load(dest)
-            result = current * operand
-            Access.store('reg', dest, result)
-            return False
-
-        if instruction.opcode == 6:  # DIV
-            current = register.load(dest)
-            if operand == 0:
-                raise Except('Division by zero!')
-            result = current / operand
-            Access.store('reg', dest, result)
-            return False
-
-        if instruction.opcode == 7:  # JMP
-            self.write_pc(int(operand))
+        if mnemonic == 'JMP':
+            self.write_pc(int(op1[2]))
             return True
 
-        if instruction.opcode == 8:  # JZ
-            test_value = register.load(dest)
-            if test_value == 0:
-                self.write_pc(int(operand))
+        if mnemonic == 'JEQ':
+            jr = register.load(variable.load('JR'))
+            if jr == 0:
+                self.write_pc(int(op1[2]))
                 return True
             return False
 
-        if instruction.opcode == 9:  # JNZ
-            test_value = register.load(dest)
-            if test_value != 0:
-                self.write_pc(int(operand))
+        if mnemonic == 'JNE':
+            jr = register.load(variable.load('JR'))
+            if jr != 0:
+                self.write_pc(int(op1[2]))
                 return True
             return False
 
-        if instruction.opcode == 10:  # HALT
-            self.halted = True
+        if mnemonic == 'JLT':
+            jr = register.load(variable.load('JR'))
+            if jr < 0:
+                self.write_pc(int(op1[2]))
+                return True
+            return False
+
+        if mnemonic == 'JLE':
+            jr = register.load(variable.load('JR'))
+            if jr <= 0:
+                self.write_pc(int(op1[2]))
+                return True
+            return False
+
+        if mnemonic == 'JGT':
+            jr = register.load(variable.load('JR'))
+            if jr > 0:
+                self.write_pc(int(op1[2]))
+                return True
+            return False
+
+        if mnemonic == 'JGE':
+            jr = register.load(variable.load('JR'))
+            if jr >= 0:
+                self.write_pc(int(op1[2]))
+                return True
+            return False
+
+        if mnemonic == 'CALL':
+            self.write((op1[0], op1[1]), op2_value, movecode=1)
+            return True
+
+        if mnemonic == 'RET':
+            self.write((op1[0], op1[1]), op2_value, movecode=2)
+            return True
+
+        if mnemonic == 'SCAN':
+            self.write((op1[0], op1[1]), op2_value, movecode=3)
             return False
 
         raise Except(
