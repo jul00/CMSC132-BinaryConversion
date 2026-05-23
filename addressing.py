@@ -130,22 +130,18 @@ class AddressingMode:
         Relative Addressing Mode.
 
         Effective address = current Program Counter (PC) + displacement.
-
-        Useful for jumps that say "go forward/backward by N steps"
-        relative to where we currently are in the program.
+        Returns the value at that address.
 
         Parameters:
             displace – an integer offset (positive = forward, negative = backward)
 
-        Returns: the computed effective address (PC + displace)
+        Returns: the value stored in memory at (PC + displace)
         Note: always used as the SECOND operand only.
         """
         # Retrieve the current value of PC from the register
-        # Flow: variable['PC'] → register address of PC (13)
-        #        register[13]  → current PC value
         pc_value = Access.data('PC', ['var', 'reg'])
 
-        return pc_value + displace
+        return memory.load(int(pc_value + displace))
 
     # ----------------------------------------------------------
     @staticmethod
@@ -154,23 +150,18 @@ class AddressingMode:
         Based Addressing Mode.
 
         Effective address = Base Register (BR) value + displacement.
-
-        BR (register slot 9) holds the address of the first
-        instruction. Adding a displacement lets you reach nearby
-        instructions/blocks from that base point.
+        Returns the value at that address.
 
         Parameters:
             displace – an integer offset
 
-        Returns: the computed effective address (BR + displace)
+        Returns: the value stored in memory at (BR + displace)
         Note: always used as the SECOND operand only.
         """
         # Retrieve the current value of BR from the register
-        # Flow: variable['BR'] → register address of BR (9)
-        #        register[9]   → current BR value
         br_value = Access.data('BR', ['var', 'reg'])
 
-        return br_value + displace
+        return memory.load(int(br_value + displace))
 
     # ----------------------------------------------------------
     @staticmethod

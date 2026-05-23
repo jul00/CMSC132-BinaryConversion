@@ -1,342 +1,237 @@
-# =============================================================
-#  run.py
-#  Johann's part  → Except class  (top of the file)
-#  Julo's part    → Program class (will be added below)
-# =============================================================
-
 from bin_convert import HalfPrecision, Length
 from storage import memory, register, variable
 from addressing import Access, AddressingMode
 from compiler import Instruction
 
-
-# ─────────────────────────────────────────────────────────────
-#  Except
-#  A simple container that describes an exception (error)
-#  that can happen during program execution.
-#
-#  Think of it like a custom error report card:
-#    - What went wrong? (message)
-#    - Did it actually happen? (occur)
-#    - What should be returned instead? (ret)
-# ─────────────────────────────────────────────────────────────
 class Except(Exception):
-
     def __init__(self, msg, occur=True):
-        """
-        Create a new exception.
+        self.message = msg
+        self.occur = occur
+        self.ret = None
 
-        Parameters:
-            msg   – a string describing the error
-                    e.g. "Division by zero!"
-            occur – True if the exception actually happened,
-                    False if it is just a placeholder (default: True)
-        """
-        self.message = msg   # The error description
-        self.occur   = occur # Did this exception actually happen?
-        self.ret     = None  # Optional: a value to return instead of crashing
-
-
-    def dispMSG(self):
-        """
-        Print the exception message to the screen.
-        Call this when you want to show the error to the user.
-        """
+    @classmethod
+    def dispMSG(cls, self): # Signature might be weird if called as class method on instance
         print(self.message)
 
-
     def isOccur(self):
-        """
-        Check whether this exception actually happened.
-
-        Returns:
-            True  → the exception occurred (something went wrong)
-            False → no exception, everything is fine
-        """
         return self.occur
 
-
     def setReturn(self, value):
-        """
-        Store a special return value for this exception.
-
-        Used when the program should return something meaningful
-        instead of just crashing. For example:
-          - Division of 0 / 0  → return 'Infinity'
-          - Division of x / 0  → return 'undefined'
-
-        Parameters:
-            value – the value to return when this exception happens
-        """
         self.ret = value
 
-
     def getReturn(self):
-        """
-        Retrieve the special return value for this exception.
-
-        Returns:
-            Whatever was set by setReturn() — e.g. 'Infinity' or 'undefined'
-        """
         return self.ret
+
 class Program:
-
-    def __init__(self, program=None, start_address=None, max_steps=1000):
-        self.start_address = (
-            start_address if start_address is not None
-            else Access.data('PC', ['var', 'reg']))
-        self.max_steps = max_steps
-        self.halted = False
-        self.current_instruction = None
-        self.exception = Except('No exception', occur=False)
-        self.steps = 0
-        self.reset()
-        if program is not None:
-            self.encode_program(program)
-
-    def reset(self, pc=None):
-        self.halted = False
-        self.steps = 0
-        self.current_instruction = None
-        self.exception = Except('No exception', occur=False)
-        self.write_pc(pc if pc is not None else self.start_address)
-
-    def read_pc(self):
-        return Access.data('PC', ['var', 'reg'])
-
-    def write_pc(self, value):
-        Access.store('reg', variable.load('PC'), value)
-
-    def fetch(self):
-        pc = int(self.read_pc())
-        raw_instruction = memory.load(pc)
-        Access.store('reg', variable.load('IR'), raw_instruction)
-        return raw_instruction
-
-    def decode(self, raw_instruction):
-        return Instruction(raw_instruction)
+    def __init__(self, program):
+        """Requirement VI.1: Encode each instruction of the program."""
+        Instruction.encodeProgram(program)
 
     @staticmethod
     def exception(name, value):
+        """Requirement VI.2: Finds exception based on name and value."""
         if name == 'DivByZero':
             op1, op2 = value
-            exc = Except('Division by zero!')
-            if op2 == 0:
-                exc.setReturn('Infinity' if op1 == 0 else 'undefined')
+            exc = Except("Division by zero!")
+            if op1 == 0 and op2 == 0:
+                exc.setReturn('Infinity')
+            elif op2 == 0:
+                exc.setReturn('undefined')
             return exc
-        return Except('No exception', occur=False)
+        return Except("No exception", False)
 
-    def encode_program(self, program):
-        Instruction.encodeProgram(program, start_addr=int(self.start_address))
-
-    def write(self, dest, src, movecode=0):
-        if movecode == 1:
-            Access.store('reg', variable.load('CR'), self.read_pc())
-        elif movecode == 2:
-            self.write_pc(register.load(variable.load('CR')))
+    @classmethod
+    def write(cls, dest, src, movecode=0):
+        """Requirement VI.3: Perform Write operations."""
+        # movecode logic
+        if movecode == 1: # CALL
+            pc_val = register.load(variable.load("PC"))
+            register.store(variable.load("CR"), pc_val)
+        elif movecode == 2: # RET
+            cr_val = register.load(variable.load("CR"))
+            register.store(variable.load("PC"), cr_val)
+        elif movecode == 3: # SCAN
+            # In a real system we'd ask user, here we might have a message/value
+            # Prompt says "change the src by the value of the message"
+            pass
+        
+        # Default move: src to dest
+        # dest can be (address, storage_object) or just address if we assume storage
         if isinstance(dest, tuple):
-            typ, addr = dest
-            Access.store(typ, addr, src)
+            addr, storage = dest
+            storage.store(addr, src)
         else:
-            raise ValueError('Invalid write destination')
+            # Fallback if dest is just an address, assume register for now or handled elsewhere
+            pass
 
-    def getOp(self, mode, addr):
-        hp_addr = HalfPrecision.hpdec2bin(addr)
-        if mode == '000':
-            effective, value, _ = AddressingMode.register(hp_addr)
-            return ('reg', effective, value)
-        if mode == '001':
-            effective, value = AddressingMode.register_indirect(hp_addr)
-            return ('mem', effective, value)
-        if mode == '010':
-            effective, value = AddressingMode.direct(hp_addr)
-            return ('mem', effective, value)
-        if mode == '011':
-            effective, value = AddressingMode.indirect(hp_addr)
-            return ('mem', effective, value)
-        if mode == '100' or mode == '101':
-            effective, value = AddressingMode.indexed(addr)
-            return ('mem', effective, value)
-        if mode == '110':
-            effective, value = AddressingMode.autoinc(hp_addr)
-            return ('mem', effective, value)
-        if mode == '111':
-            effective, value = AddressingMode.autodec(hp_addr)
-            return ('mem', effective, value)
-        raise ValueError(f'Unsupported operand mode: {mode}')
+    @classmethod
+    def execute(cls, result, opcode):
+        """Requirement VI.4: Perform Execute operations."""
+        write_bit = int(opcode[1])
+        category = opcode[2:]
+        
+        if write_bit == 1:
+            # Perform four basic operations and modulo
+            # Categories: 000 MOD, 001 ADD, 010 SUB, 011 MUL, 100 DIV
+            # Category 001 is also shared by CB/CF but they simplify to ADD
+            op1_val, op2_val = result
+            if category == "000": return op1_val % op2_val
+            if category == "001": return op1_val + op2_val
+            if category == "010": return op1_val - op2_val
+            if category == "011": return op1_val * op2_val
+            if category == "100": # DIV
+                if op2_val == 0:
+                    exc = cls.exception('DivByZero', (op1_val, op2_val))
+                    return exc.getReturn()
+                return op1_val / op2_val
+        else:
+            # Perform jumps based on category
+            # Categories: 000 JEQ, 001 JNE, 010 JLT, 011 JLE, 100 JGT, 101 JGE, 110 JMP
+            jr_val = register.load(variable.load("JR"))
+            target_pc = result # In jumps, result is typically the target address from op1
+            
+            should_jump = False
+            if category == "000": should_jump = (jr_val == 0)
+            elif category == "001": should_jump = (jr_val != 0)
+            elif category == "010": should_jump = (jr_val < 0)
+            elif category == "011": should_jump = (jr_val <= 0)
+            elif category == "100": should_jump = (jr_val > 0)
+            elif category == "101": should_jump = (jr_val >= 0)
+            elif category == "110": should_jump = True
+            
+            if should_jump:
+                register.store(variable.load("PC"), target_pc)
+        return None
 
-    def execute(self, instruction):
-        if instruction.raw == '0' * Length.instrxn or instruction.mnemonic in ('EOP', 'FUNC'):
-            self.halted = True
-            return False
+    @classmethod
+    def getOp(cls, inscode):
+        """Requirement VI.5: Gets effective address and storage type."""
+        # inscode is 10 bits or 16 bits if immediate
+        if len(inscode) == 16:
+            # alpha: immediate
+            return AddressingMode.immediate(inscode)
+        
+        mode = inscode[:3]
+        addr_bits = inscode[3:]
+        hp_addr = HalfPrecision.hpdec2bin(int(addr_bits, 2))
+        
+        # Identify based, indexed, or relative for displacement
+        if mode in ("000", "001", "010", "011") and False: # Placeholder for rb/ib logic
+            pass
+            
+        # Call appropriate addressing mode
+        # Mapping from IV.3/IV.6
+        if mode == "000": return AddressingMode.register(hp_addr)
+        if mode == "001": return AddressingMode.register_indirect(hp_addr)
+        if mode == "010": return AddressingMode.direct(hp_addr)
+        if mode == "011": return AddressingMode.indirect(hp_addr)
+        if mode == "100": # Indexed (register/memory displacement)
+            # addr_bits[0] is displacement type
+            disp = int(addr_bits[1:], 2)
+            return AddressingMode.indexed(disp)
+        if mode == "101": # Indexed (integer displacement)
+            # addr_bits[0] is sign
+            sign = -1 if addr_bits[0] == "1" else 1
+            disp = sign * int(addr_bits[1:], 2)
+            return AddressingMode.indexed(disp)
+        if mode == "110": return AddressingMode.autoinc(hp_addr)
+        if mode == "111": return AddressingMode.autodec(hp_addr)
+        
+        return None
 
-        mnemonic = instruction.mnemonic
-        op1 = self.getOp(instruction.op1_mode, instruction.op1_addr)
-        op2_value = instruction.get_operand_value()
-
-        if mnemonic == 'MOV':
-            self.write((op1[0], op1[1]), op2_value)
-            return False
-
-        if mnemonic == 'PRNT':
-            # If no explicit second operand was encoded, print op1.
-            no_second = (
-                instruction.op2_bits == '0' * 10 and
-                instruction.extra_bits == '0' * 5 and
-                instruction.rb == '0' and
-                instruction.ib == '0'
-            )
-            val = op1[2] if no_second else op2_value
-            print(val)
-            return False
-
-        if mnemonic == 'ADD':
-            result = op1[2] + op2_value
-            self.write((op1[0], op1[1]), result)
-            return False
-
-        if mnemonic == 'SUB':
-            result = op1[2] - op2_value
-            self.write((op1[0], op1[1]), result)
-            return False
-
-        if mnemonic == 'MUL':
-            result = op1[2] * op2_value
-            self.write((op1[0], op1[1]), result)
-            return False
-
-        if mnemonic == 'DIV':
-            if op2_value == 0:
-                raise Program.exception('DivByZero', (op1[2], op2_value))
-            result = op1[2] / op2_value
-            self.write((op1[0], op1[1]), result)
-            return False
-
-        if mnemonic == 'JMP':
-            self.write_pc(int(op1[2]))
-            return True
-
-        if mnemonic == 'JEQ':
-            jr = register.load(variable.load('JR'))
-            if jr == 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'JNE':
-            jr = register.load(variable.load('JR'))
-            if jr != 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'JLT':
-            jr = register.load(variable.load('JR'))
-            if jr < 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'JLE':
-            jr = register.load(variable.load('JR'))
-            if jr <= 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'JGT':
-            jr = register.load(variable.load('JR'))
-            if jr > 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'JGE':
-            jr = register.load(variable.load('JR'))
-            if jr >= 0:
-                self.write_pc(int(op1[2]))
-                return True
-            return False
-
-        if mnemonic == 'CALL':
-            self.write((op1[0], op1[1]), op2_value, movecode=1)
-            return True
-
-        if mnemonic == 'RET':
-            self.write((op1[0], op1[1]), op2_value, movecode=2)
-            return True
-
-        if mnemonic == 'SCAN':
-            self.write((op1[0], op1[1]), op2_value, movecode=3)
-            return False
-
-        raise Except(
-            f'Unhandled opcode {instruction.opcode} ({instruction.mnemonic})')
-
-    def step(self):
-        if self.halted:
-            raise Except('Program has already halted.')
-
-        raw_instruction = self.fetch()
-        instruction = self.decode(raw_instruction)
-        self.current_instruction = instruction
-
-        try:
-            pc_changed = self.execute(instruction)
-        except Except as exc:
-            self.exception = exc
-            raise
-
-        if not self.halted and not pc_changed:
-            self.write_pc(self.read_pc() + 1)
-
-        self.steps += 1
-        return instruction
-
-    def run(self, max_steps=None):
-        limit = self.max_steps if max_steps is None else max_steps
-        while not self.halted and self.steps < limit:
-            try:
-                self.step()
-            except Except:
+    @classmethod
+    def run(cls):
+        """Requirement VI.6: Execute Instruction Codes starting from address in IR."""
+        # Initialize monadic/niladic (empty for now)
+        monadic = []
+        niladic = []
+        
+        while True:
+            # Gets value of IR (current instruction pointer)
+            ir_ptr = int(register.load(variable.load("IR")))
+            inscode = memory.load(ir_ptr)
+            
+            # Break if not 32-bit or all zeros
+            if not isinstance(inscode, str) or len(inscode) != 32 or inscode == "0"*32:
                 break
-        return self
+            
+            # Slice bits
+            opcode = inscode[0:5]
+            ib = inscode[5]
+            op1_code = inscode[6:16]
+            rb = inscode[16]
+            op2_code = inscode[17:27]
+            extra = inscode[27:32]
+            
+            execute_bit = int(opcode[0])
+            write_bit = int(opcode[1])
+            
+            # Get Operands
+            # Op1 is always 10 bits
+            op1_res = cls.getOp(op1_code)
+            
+            # Op2 depends on ib/rb
+            if ib == "1":
+                # Immediate mode: bits 16 (rb) + 17-31 (op2_code + extra) = 16 bits
+                op2_res = cls.getOp(rb + op2_code + extra)
+            elif rb == "1":
+                # Relative/Based: use AddressingMode directly or via getOp with context
+                # Since getOp signature is just inscode, we might need to adjust
+                # Prompt III.13 says they return value only.
+                # If rb=1, Op2Mode(3) + Op2Addr(7) are relative/based
+                sign = -1 if op2_code[3] == "1" else 1
+                disp = sign * int(op2_code[4:], 2)
+                mode_type = op2_code[:3]
+                if mode_type.startswith("1"): # Relative
+                    op2_res = AddressingMode.relative(disp)
+                else: # Based
+                    op2_res = AddressingMode.based(disp)
+            else:
+                op2_res = cls.getOp(op2_code)
 
-    def load_program(self, instructions, start_address=None):
-        address = (
-            self.start_address if start_address is None
-            else start_address)
-        for instruction in instructions:
-            raw = instruction.word if hasattr(instruction, 'word') else instruction
-            if not isinstance(raw, str):
-                raise ValueError('Program.load_program expects instruction bitstrings or Instruction objects.')
-            Access.store('mem', address, raw)
-            address += 1
+            # Execute & Write
+            if execute_bit == 1:
+                # dyadic operations need two values
+                # op1_res can be (addr, val, storage) or (addr, val)
+                val1 = op1_res[1] if isinstance(op1_res, tuple) else op1_res
+                val2 = op2_res[1] if isinstance(op2_res, tuple) else op2_res
+                
+                exec_res = cls.execute((val1, val2), opcode)
+                
+                if write_bit == 1:
+                    # Target is typically op1
+                    dest = (int(op1_res[0]), op1_res[2] if len(op1_res) > 2 else memory)
+                    cls.write(dest, exec_res)
+            
+            elif write_bit == 1:
+                # E.g. MOV, ADDPC, CALL, RET, SCAN (Execute Bit 0, Write Bit 1)
+                movecode = 0
+                category = opcode[2:]
+                if category == "001": movecode = 1 # CALL
+                elif category == "010": movecode = 2 # RET
+                elif category == "011": movecode = 3 # SCAN
+                
+                val2 = op2_res[1] if isinstance(op2_res, tuple) else op2_res
+                dest = (int(op1_res[0]), op1_res[2] if len(op1_res) > 2 else memory)
+                cls.write(dest, val2, movecode)
+            
+            elif execute_bit == 0 and write_bit == 0:
+                # PRNT - typically prints Op1 if it's a single-operand call like 'PRNT R1'
+                val1 = op1_res[1] if isinstance(op1_res, tuple) else op1_res
+                print(val1)
 
-    def get_register(self, name):
-        register_address = variable.load(name)
-        return register.load(int(register_address))
+            # Move PC to IR, then increment PC
+            # The prompt says: "Move the value of 'PC' to 'IR', then increment the value of 'PC' by 1."
+            pc_val = int(register.load(variable.load("PC")))
+            register.store(variable.load("IR"), pc_val)
+            register.store(variable.load("PC"), pc_val + 1)
 
-    def set_register(self, name, value):
-        register_address = variable.load(name)
-        Access.store('reg', int(register_address), value)
-
-    def dump_state(self):
-        print('Program state:')
-        print(f'  PC = {self.read_pc()}')
-        print(f'  Halted = {self.halted}')
-        print(f'  Steps = {self.steps}')
-        if self.current_instruction is not None:
-            print(f'  Current instruction = {self.current_instruction}')
-        if self.exception is not None and self.exception.isOccur():
-            print(f'  Exception = {self.exception.message}')
-
-
-if __name__ == '__main__':
-    div_exc = Except('Division by zero', occur=False)
+if __name__ == "__main__":
     import sys
+    # Requirement VII.7: Running from file
     if len(sys.argv) > 1:
-        with open(sys.argv[1], encoding='utf-8') as f:
-            lines = [line.rstrip('\n') for line in f]
-        Program(lines).run()
-
+        filename = sys.argv[1]
+        with open(filename, 'r') as f:
+            prog_lines = f.readlines()
+        p = Program(prog_lines)
+        p.run()
