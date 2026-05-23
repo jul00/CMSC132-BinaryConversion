@@ -1,0 +1,4 @@
+MOV R1 7
+ADD R1 3
+PRNT R1
+EOP

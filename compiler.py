@@ -5,22 +5,46 @@ from storage import memory, register, variable, Storage
 #  Operation lookup tables
 # ─────────────────────────────────────────────────────────────
 
-# Operations are grouped by their (Execute bit, Write bit) pair.
-# Index inside each group becomes the Category Code (3-bit).
+# Operations mapped to their (Execute, Write) pair with explicit
+# Category Codes so shared codes work (e.g. CB/CF share ADD's 001).
 operations = {
-    (1, 1): ["MOD", "ADD", "SUB", "MUL", "DIV"],   # Cat: 000,001,010,011,100
-    (1, 0): ["JEQ", "JNE", "JLT", "JLE", "JGT", "JGE", "JMP"],  # Cat: 000…110
-    (0, 1): ["MOV", "CALL", "RET", "SCAN"],         # Cat: 000,001,010,011
-    (0, 0): ["PRNT", "EOP", "FUNC"],                # Cat: 000,001,001
+    (1, 1): {
+        "MOD": "000",
+        "ADD": "001",
+        "CB":  "001",
+        "CF":  "001",
+        "SUB": "010",
+        "CMP": "010",
+        "MUL": "011",
+        "DIV": "100",
+    },
+    (1, 0): {
+        "JEQ": "000",
+        "JNE": "001",
+        "JLT": "010",
+        "JLE": "011",
+        "JGT": "100",
+        "JGE": "101",
+        "JMP": "110",
+    },
+    (0, 1): {
+        "MOV":   "000",
+        "ADDPC": "000",
+        "CALL":  "001",
+        "RET":   "010",
+        "SCAN":  "011",
+    },
+    (0, 0): {
+        "PRNT": "000",
+        "EOP":  "001",
+        "FUNC": "001",
+    },
 }
 
 # operationCodes[group_key] = (execute_write_bits, {op_name: category_code})
 operationCodes = {}
-for (ex, wr), ops in operations.items():
-    ew_bits = str(ex) + str(wr)           # e.g. "11", "10", "01", "00"
-    cat_map = {}
-    for idx, op in enumerate(ops):
-        cat_map[op] = format(idx, "03b")  # 3-bit category code string
+for (ex, wr), cat_map in operations.items():
+    ew_bits = str(ex) + str(wr)
     operationCodes[(ex, wr)] = (ew_bits, cat_map)
 
 
@@ -74,6 +98,15 @@ class Instruction:
         '111': 'AUTODEC',
     }
 
+    @staticmethod
+    def decodeMSG(msg):
+        msg = msg.replace('-_', '\n')
+        msg = msg.replace('-', ' ')
+        msg = msg.replace('_', '\t')
+        msg = msg.replace('minus', '-')
+        msg = msg.replace('under', '_')
+        return msg
+
     def __init__(self, word):
         if not isinstance(word, str):
             raise ValueError('Instruction word must be a bit string.')
@@ -120,12 +153,26 @@ class Instruction:
         if self.raw == '0' * Length.instrxn:
             return None
 
-        if self.rb == '1':
+        if self.ib == '1' or self.rb == '1':
             hp_bits = self.ib + self.op2_bits + self.extra_bits
             return HalfPrecision.hpbin2dec(hp_bits)
 
         mode = self.op2_mode
         addr = self.op2_addr
+
+        if self.rb == '1':
+            if mode in ('000', '100'):
+                return register.load(addr)
+            if mode in ('001', '101'):
+                return memory.load(addr)
+            if mode == '010':
+                return addr
+            if mode == '011':
+                return -addr
+            if mode == '110':
+                return addr
+            if mode == '111':
+                return -addr
 
         if mode == '000':
             return register.load(addr)
@@ -135,6 +182,9 @@ class Instruction:
             return memory.load(addr)
         if mode == '011':
             return memory.load(memory.load(addr))
+        if mode in ('100', '101'):
+            xr_val = register.load(int(variable.load("XR")))
+            return memory.load(int(xr_val) + addr)
         if mode == '110':
             mem_addr = register.load(addr)
             value = memory.load(mem_addr)
@@ -148,12 +198,100 @@ class Instruction:
         raise ValueError(f'Unsupported operand mode: {mode}')
 
     @staticmethod
-    def encodeOp(operation):
+    def encodeOpcode(operation):
         operation = operation.upper()
         for (ex, wr), (ew_bits, cat_map) in operationCodes.items():
             if operation in cat_map:
                 return ew_bits + cat_map[operation]
         raise ValueError(f'Unknown operation: {operation}')
+
+    @staticmethod
+    def encodeOperand(operand):
+        op = operand.strip().replace(',', '')
+        op_upper = op.upper()
+
+        try:
+            value = int(op) if '.' not in op else float(op)
+            return HalfPrecision.hpdec2bin(value)
+        except ValueError:
+            pass
+
+        if op_upper.startswith('M:'):
+            return None
+
+        if '(' in op_upper and ')' in op_upper:
+            p_open = op_upper.index('(')
+            p_close = op_upper.index(')')
+            inner = op_upper[p_open+1:p_close]
+            outer = op_upper[:p_open] + op_upper[p_close+1:]
+
+            if inner.startswith('Z'):
+                remain = inner[1:]
+                mode = '100' if Instruction._is_reg(remain) else \
+                       '101' if Instruction._is_mem(remain) else \
+                       '110' if int(remain) >= 0 else '111'
+                return mode + '0' + Length.addZeros(
+                    abs(Instruction._resolve_value(remain)), 6)
+            if inner.startswith('Y'):
+                remain = inner[1:]
+                mode = '000' if Instruction._is_reg(remain) else \
+                       '001' if Instruction._is_mem(remain) else \
+                       '010' if int(remain) >= 0 else '011'
+                return mode + '0' + Length.addZeros(
+                    abs(Instruction._resolve_value(remain)), 6)
+            if inner.startswith('X'):
+                remain = inner[1:]
+                try:
+                    val = int(remain)
+                    sign = '0' if val >= 0 else '1'
+                    mode = '101'
+                    return mode + sign + Length.addZeros(abs(val), 6)
+                except ValueError:
+                    pass
+                disp = '0' if Instruction._is_reg(remain) else '1'
+                mode = '100'
+                return mode + disp + Length.addZeros(
+                    Instruction._resolve_value(remain), 6)
+
+            if '+' in outer:
+                return ADDR_AUTOINC + Length.addZeros(
+                    Instruction._resolve_value(inner), Length.opAddr)
+            if '-' in outer:
+                return ADDR_AUTODEC + Length.addZeros(
+                    Instruction._resolve_value(inner), Length.opAddr)
+            if any(inner.startswith(r) for r in ('R','P','C','A','B','D','E','F','G','H','I','J')):
+                return ADDR_REG_INDIRECT + Length.addZeros(
+                    Instruction._resolve_value(inner), Length.opAddr)
+            return ADDR_INDIRECT + Length.addZeros(
+                Instruction._resolve_value(inner), Length.opAddr)
+
+        if any(op_upper.startswith(r) for r in ('R','P','C','A','B','D','E','F','G','H','I','J')):
+            return ADDR_REGISTER + Length.addZeros(
+                Instruction._resolve_value(op_upper), Length.opAddr)
+        return ADDR_DIRECT + Length.addZeros(
+            Instruction._resolve_value(op_upper), Length.opAddr)
+
+    @staticmethod
+    def _is_reg(token):
+        t = token.upper()
+        return any(t.startswith(r) for r in ('R','P','C','I','J')) and not t.startswith('PC')
+
+    @staticmethod
+    def _is_mem(token):
+        t = token.upper()
+        return any(t.startswith(c) for c in ('A','B','D','E','F','G','H'))
+
+    @staticmethod
+    def _resolve_value(token):
+        token = token.upper()
+        if token.startswith('R') and token[1:].isdigit():
+            return int(variable.load(token))
+        if token in variable.data:
+            return int(variable.load(token))
+        try:
+            return int(token)
+        except ValueError:
+            raise ValueError(f'Unknown operand token: {token}')
 
     @staticmethod
     def resolve_address(token):
@@ -176,42 +314,65 @@ class Instruction:
             raise ValueError('Empty instruction line.')
 
         op = parts[0].upper()
+
         if op == 'EOP':
             return '0' * Length.instrxn
-
-        opcode = Instruction.encodeOp(op)
         if op == 'FUNC':
-            return opcode + '0' * (Length.instrxn - len(opcode))
+            return '0' * Length.instrxn
+
+        if op == 'CB':
+            return Instruction.encode('ADD BR ' + parts[1])
+        if op == 'CF':
+            return Instruction.encode('ADD BR ' + parts[1])
+        if op == 'CMP':
+            return Instruction.encode('SUB JR ' + parts[1])
+
+        if op == 'CALL':
+            return [
+                Instruction.encode('MOV CR PC'),
+                Instruction.encode('MOV PC ' + parts[1]),
+            ]
+
+        if op == 'RET':
+            return [
+                Instruction.encode('MOV PC CR'),
+                Instruction.encode('MOV ACC ' + parts[1]),
+            ]
+
+        if op == 'ADDPC':
+            return Instruction.encode('MOV ' + ' '.join(parts[1:]))
+
+        opcode = Instruction.encodeOpcode(op)
         if len(parts) < 2:
             raise ValueError(f'Instruction {op} requires operands.')
 
-        dest_token = parts[1]
-        src_token = parts[2] if len(parts) > 2 else None
-        dest_mode = '000'
-        dest_addr = Instruction.resolve_address(dest_token)
-        dest_bits = dest_mode + Length.addZeros(dest_addr, Length.opAddr)
+        dest_token = parts[1].replace(',', '')
+        dest_code = Instruction.encodeOperand(dest_token)
+        dest_bits = dest_code
 
-        op2_bits = '0' * Length.operand
+        op2_bits = '0' * 10
         extra_bits = '0' * 5
         rb = '0'
         ib = '0'
 
-        if src_token is not None:
-            if src_token.replace('.', '', 1).lstrip('+-').isdigit():
-                try:
-                    value = int(src_token)
-                except ValueError:
-                    value = float(src_token)
-                hp = HalfPrecision.hpdec2bin(value)
-                ib = hp[0]
+        if len(parts) > 2:
+            src_token = parts[2].replace(',', '')
+            src_code = Instruction.encodeOperand(src_token)
+
+            if src_code is None:
+                pass
+            elif len(src_code) == Length.precision:
+                ib = src_code[0]
                 rb = '1'
-                op2_bits = hp[1:11]
-                extra_bits = hp[11:]
+                op2_bits = src_code[1:11]
+                extra_bits = src_code[11:]
             else:
                 ib = '0'
-                src_mode = '000'
-                src_addr = Instruction.resolve_address(src_token)
-                op2_bits = src_mode + Length.addZeros(src_addr, Length.opAddr)
+                op2_bits = src_code
+                extra_bits = '0' * 5
+                src_upper = src_token.upper()
+                if '(' in src_upper and ('Z' in src_upper or 'Y' in src_upper):
+                    rb = '1'
 
         return opcode + ib + dest_bits + rb + op2_bits + extra_bits
 
@@ -220,19 +381,21 @@ class Instruction:
     #  encodeProgram  –  encode all instructions into memory
     # ──────────────────────────────────────────────────────────
     @staticmethod
-    def encodeProgram(program):
+    def encodeProgram(program, start_addr=None):
         """
         Takes a list of raw instruction strings (from a source file),
         encodes each one into a 32-bit Instruction Code, and stores
-        them into memory starting at the address in BR.
+        them into memory starting at the given address (or the
+        address in BR if not specified).
 
         CB and CF instructions are placed at the BEGINNING of the
         instruction list (before other instructions) so that block
         addresses are resolved correctly before the program runs.
         """
 
-        # Address where instructions start (value stored in BR register)
-        start_addr = int(register.load(variable.load("BR")))
+        # Address where instructions start
+        if start_addr is None:
+            start_addr = int(register.load(variable.load("BR")))
 
         # We'll build the final ordered list here.
         # CB/CF go at the front; everything else goes at the back.

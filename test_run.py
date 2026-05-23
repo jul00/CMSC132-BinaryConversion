@@ -23,7 +23,7 @@ def resolve_address(token):
 
 
 def build_instruction(op, op1_mode, op1_addr, op2_mode='000', op2_addr=0, immediate=None):
-    opcode = Instruction.encodeOp(op)
+    opcode = Instruction.encodeOpcode(op)
     op1_bits = op1_mode + Length.addZeros(op1_addr, Length.opAddr)
 
     if immediate is not None:

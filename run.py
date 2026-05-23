@@ -127,59 +127,7 @@ class Program:
         return Except('No exception', occur=False)
 
     def encode_program(self, program):
-        start_addr = int(self.start_address)
-
-        ordered_instructions = []
-        block_counter = 0
-        in_multiline_comment = False
-
-        for raw_line in program:
-            line = raw_line.strip()
-            if not line:
-                continue
-
-            # Multiline comment toggle (z ... z)
-            if line[0] == 'z':
-                in_multiline_comment = not in_multiline_comment
-                continue
-            if in_multiline_comment:
-                continue
-
-            # Single-line comment (x)
-            if line[0] == 'x':
-                continue
-
-            parts = line.split()
-            operation = parts[0].upper()
-
-            encoded = Instruction.encode(line)
-            encoded_list = encoded if isinstance(encoded, list) else [encoded]
-
-            if operation in ("CB", "CF"):
-                # current address for this block instruction
-                block_addr = start_addr + block_counter
-
-                # store the block address into the block operand register
-                block_reg = variable.load(parts[1])
-                hp_addr = HalfPrecision.hpdec2bin(block_addr)
-                # block_reg is the register slot for the block variable
-                register.store(int(block_reg), hp_addr)
-
-                for enc in encoded_list:
-                    ordered_instructions.insert(block_counter, enc)
-                    block_counter += 1
-            else:
-                for enc in encoded_list:
-                    ordered_instructions.append(enc)
-
-        # store number of blocks into BR register
-        register.store(variable.load("BR"), block_counter)
-
-        # write all encoded instructions into memory starting at start_addr
-        addr = start_addr
-        for enc in ordered_instructions:
-            Access.store('mem', addr, enc)
-            addr += 1
+        Instruction.encodeProgram(program, start_addr=int(self.start_address))
 
     def write(self, dest, src, movecode=0):
         if movecode == 1:
@@ -233,7 +181,7 @@ class Program:
         if mnemonic == 'PRNT':
             # If no explicit second operand was encoded, print op1.
             no_second = (
-                instruction.op2_bits == '0' * Length.operand and
+                instruction.op2_bits == '0' * 10 and
                 instruction.extra_bits == '0' * 5 and
                 instruction.rb == '0' and
                 instruction.ib == '0'
@@ -382,4 +330,13 @@ class Program:
             print(f'  Current instruction = {self.current_instruction}')
         if self.exception is not None and self.exception.isOccur():
             print(f'  Exception = {self.exception.message}')
+
+
+if __name__ == '__main__':
+    div_exc = Except('Division by zero', occur=False)
+    import sys
+    if len(sys.argv) > 1:
+        with open(sys.argv[1], encoding='utf-8') as f:
+            lines = [line.rstrip('\n') for line in f]
+        Program(lines).run()
 
