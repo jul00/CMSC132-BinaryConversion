@@ -127,13 +127,59 @@ class Program:
         return Except('No exception', occur=False)
 
     def encode_program(self, program):
-        address = self.start_address
-        for line in program:
+        start_addr = int(self.start_address)
+
+        ordered_instructions = []
+        block_counter = 0
+        in_multiline_comment = False
+
+        for raw_line in program:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            # Multiline comment toggle (z ... z)
+            if line[0] == 'z':
+                in_multiline_comment = not in_multiline_comment
+                continue
+            if in_multiline_comment:
+                continue
+
+            # Single-line comment (x)
+            if line[0] == 'x':
+                continue
+
+            parts = line.split()
+            operation = parts[0].upper()
+
             encoded = Instruction.encode(line)
             encoded_list = encoded if isinstance(encoded, list) else [encoded]
-            for instruction in encoded_list:
-                Access.store('mem', address, instruction)
-                address += 1
+
+            if operation in ("CB", "CF"):
+                # current address for this block instruction
+                block_addr = start_addr + block_counter
+
+                # store the block address into the block operand register
+                block_reg = variable.load(parts[1])
+                hp_addr = HalfPrecision.hpdec2bin(block_addr)
+                # block_reg is the register slot for the block variable
+                register.store(int(block_reg), hp_addr)
+
+                for enc in encoded_list:
+                    ordered_instructions.insert(block_counter, enc)
+                    block_counter += 1
+            else:
+                for enc in encoded_list:
+                    ordered_instructions.append(enc)
+
+        # store number of blocks into BR register
+        register.store(variable.load("BR"), block_counter)
+
+        # write all encoded instructions into memory starting at start_addr
+        addr = start_addr
+        for enc in ordered_instructions:
+            Access.store('mem', addr, enc)
+            addr += 1
 
     def write(self, dest, src, movecode=0):
         if movecode == 1:
@@ -182,6 +228,18 @@ class Program:
 
         if mnemonic == 'MOV':
             self.write((op1[0], op1[1]), op2_value)
+            return False
+
+        if mnemonic == 'PRNT':
+            # If no explicit second operand was encoded, print op1.
+            no_second = (
+                instruction.op2_bits == '0' * Length.operand and
+                instruction.extra_bits == '0' * 5 and
+                instruction.rb == '0' and
+                instruction.ib == '0'
+            )
+            val = op1[2] if no_second else op2_value
+            print(val)
             return False
 
         if mnemonic == 'ADD':

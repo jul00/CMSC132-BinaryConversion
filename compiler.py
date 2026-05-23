@@ -180,6 +180,8 @@ class Instruction:
             return '0' * Length.instrxn
 
         opcode = Instruction.encodeOp(op)
+        if op == 'FUNC':
+            return opcode + '0' * (Length.instrxn - len(opcode))
         if len(parts) < 2:
             raise ValueError(f'Instruction {op} requires operands.')
 
@@ -192,6 +194,7 @@ class Instruction:
         op2_bits = '0' * Length.operand
         extra_bits = '0' * 5
         rb = '0'
+        ib = '0'
 
         if src_token is not None:
             if src_token.replace('.', '', 1).lstrip('+-').isdigit():
