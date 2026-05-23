@@ -9,8 +9,7 @@ class Except(Exception):
         self.occur = occur
         self.ret = None
 
-    @classmethod
-    def dispMSG(cls, self): # Signature might be weird if called as class method on instance
+    def dispMSG(self):
         print(self.message)
 
     def isOccur(self):
@@ -51,9 +50,10 @@ class Program:
             cr_val = register.load(variable.load("CR"))
             register.store(variable.load("PC"), cr_val)
         elif movecode == 3: # SCAN
-            # In a real system we'd ask user, here we might have a message/value
-            # Prompt says "change the src by the value of the message"
-            pass
+            mi = int(variable.data.get("MI", 0))
+            msg_storage = variable.data.get("MSG", {})
+            src = msg_storage.get(mi, "")
+            variable.data["MI"] = mi + 1
         
         # Default move: src to dest
         # dest can be (address, storage_object) or just address if we assume storage
@@ -171,37 +171,53 @@ class Program:
             op1_res = cls.getOp(op1_code)
             
             # Op2 depends on ib/rb
+            #
+            # ib/rb overlap: The 16-bit HP immediate spans bits 16-31 in the
+            # instruction word (rb + op2_code + extra).  When ib=1 the rb
+            # field carries the HP sign bit rather than acting as a
+            # relative/based flag.  The encoder (compiler.py) sets ib=1 and
+            # rb=HP[0] for immediate operands; rb is only meaningful as a
+            # mode flag when ib=0.
             if ib == "1":
-                # Immediate mode: bits 16 (rb) + 17-31 (op2_code + extra) = 16 bits
+                # Reconstruct the 16-bit HP value: rb (sign bit) + op2_code + extra
                 op2_res = cls.getOp(rb + op2_code + extra)
             elif rb == "1":
-                # Relative/Based: use AddressingMode directly or via getOp with context
-                # Since getOp signature is just inscode, we might need to adjust
-                # Prompt III.13 says they return value only.
-                # If rb=1, Op2Mode(3) + Op2Addr(7) are relative/based
-                sign = -1 if op2_code[3] == "1" else 1
-                disp = sign * int(op2_code[4:], 2)
+                # Relative/Based: decode based on mode (IV.6)
+                # Op2Mode(3 bits) + Op2Addr(7 bits) = 10-bit op2_code
                 mode_type = op2_code[:3]
-                if mode_type.startswith("1"): # Relative
+                raw_addr = int(op2_code[3:], 2)
+
+                if mode_type in ("000", "100"):  # displacement from register
+                    disp = register.load(raw_addr)
+                elif mode_type in ("001", "101"):  # displacement from memory
+                    disp = memory.load(raw_addr)
+                else:  # direct displacement (010, 011, 110, 111)
+                    disp = raw_addr
+                    if mode_type in ("011", "111"):
+                        disp = -disp
+
+                if mode_type.startswith("1"):  # Relative modes (100-111)
                     op2_res = AddressingMode.relative(disp)
-                else: # Based
+                else:  # Based modes (000-011)
                     op2_res = AddressingMode.based(disp)
             else:
                 op2_res = cls.getOp(op2_code)
 
             # Execute & Write
             if execute_bit == 1:
-                # dyadic operations need two values
                 # op1_res can be (addr, val, storage) or (addr, val)
                 val1 = op1_res[1] if isinstance(op1_res, tuple) else op1_res
                 val2 = op2_res[1] if isinstance(op2_res, tuple) else op2_res
                 
-                exec_res = cls.execute((val1, val2), opcode)
-                
                 if write_bit == 1:
+                    # Dyadic: pass both values
+                    exec_res = cls.execute((val1, val2), opcode)
                     # Target is typically op1
                     dest = (int(op1_res[0]), op1_res[2] if len(op1_res) > 2 else memory)
                     cls.write(dest, exec_res)
+                else:
+                    # Jump: pass only the target address (val1)
+                    cls.execute(val1, opcode)
             
             elif write_bit == 1:
                 # E.g. MOV, ADDPC, CALL, RET, SCAN (Execute Bit 0, Write Bit 1)

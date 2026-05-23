@@ -116,7 +116,7 @@ class Instruction:
             return "011" + Length.addZeros(variable.load(inner), 7)
 
         # gamma: register vs direct (no parenthesis)
-        if op.startswith('R') or op in ('PC', 'ACC'):
+        if op in ('PC', 'ACC', 'JR', 'BR', 'XR', 'IR', 'CR') or op.startswith('R'):
             return "000" + Length.addZeros(variable.load(op), 7)
         else:
             # direct addressing
@@ -148,18 +148,13 @@ class Instruction:
         # Note: 'J' is handled in execution usually, but instructions say "Compare 'JR' to zero based on condition"
         # CALL/RET/ADDPC simplifications:
         if op == "ADDPC":
-            # Move relative address to operand
-            return Instruction.encode(f"MOV {parts[1]} ({parts[2]})") # Assuming parts[2] is relative
+            return Instruction.encode(f"MOV {parts[1]} (Z{parts[2]})")
         if op == "CALL":
-            # Move 'PC' to 'CR', then move Function Block to 'PC'
-            # Note: encode returns 32 bits. If CALL becomes 2 instructions, 
-            # the prompt says "Simplify to... Then, create the OpCode of the new Instruction."
-            # This suggests CALL might be a single instruction that expands during execution, 
-            # OR we return multiple. But Returns says "The 32-bit Instruction Code."
-            # Given the format, I'll return the MOV CR PC and caller must handle multiple if needed,
-            # but usually these are handled in execution. 
-            # Let's stick to OpCode mapping for now.
-            pass
+            return [Instruction.encode("MOV CR PC"),
+                    Instruction.encode(f"MOV PC {parts[1]}")]
+        if op == "RET":
+            return [Instruction.encode("MOV PC CR"),
+                    Instruction.encode(f"MOV ACC {parts[1]}")]
 
         # Normal encoding
         opcode = ""
@@ -171,6 +166,13 @@ class Instruction:
         if not opcode: return None
         
         # bits: OpCode(5) ib(1) Op1(10) rb(1) Op2(10) Extra(5)
+        #
+        # ib/rb overlap: The spec puts the 16-bit HalfPrecision immediate
+        # across the 10-bit Op2 field + 5-bit Extra + the 1-bit rb field.
+        # This means ib=1 signals immediate AND rb holds the HP sign bit (MSB).
+        # When ib=0, rb acts as a normal relative/based flag.
+        # The decoder handles this by checking ib first: if ib=1, reconstruct
+        # the full HP as rb + op2_code + extra.
         ib = "0"
         rb = "0"
         op1_code = "0" * 10
@@ -186,12 +188,11 @@ class Instruction:
             if code:
                 if len(code) == 16: # Immediate
                     ib = "1" # Flag that Op2 is immediate
-                    rb = code[0] # bit 16 takes the first bit of HP
-                    op2_code = code[1:11] # bits 17-26
-                    extra = code[11:] # bits 27-31
+                    rb = code[0] # HP sign bit overlays rb field
+                    op2_code = code[1:11]
+                    extra = code[11:]
                 else:
                     op2_code = code
-                    # Set rb if it's based or relative
                     if '(' in parts[2] and ('Y' in parts[2] or 'Z' in parts[2]):
                         rb = "1"
         
@@ -237,7 +238,10 @@ class Instruction:
             else:
                 # delta: others append to last
                 encoded = Instruction.encode(line)
-                instructions_list.append(encoded)
+                if isinstance(encoded, list):
+                    instructions_list.extend(encoded)
+                else:
+                    instructions_list.append(encoded)
                 
         # epsilon: Store number of blocks to 'BR'
         register.store(variable.load("BR"), block_counter)
