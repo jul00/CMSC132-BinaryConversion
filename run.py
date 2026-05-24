@@ -41,223 +41,160 @@ class Program:
 
     @classmethod
     def write(cls, dest, src, movecode=0):
-        """Requirement VI.3: Perform Write operations."""
-        # movecode logic
-        if movecode == 1: # CALL
+        if movecode == 1:
             pc_val = register.load(variable.load("PC"))
             register.store(variable.load("CR"), pc_val)
-        elif movecode == 2: # RET
+        elif movecode == 2:
             cr_val = register.load(variable.load("CR"))
             register.store(variable.load("PC"), cr_val)
-        elif movecode == 3: # SCAN
+        elif movecode == 3:
             mi = int(variable.data.get("MI", 0))
             msg_storage = variable.data.get("MSG", {})
             src = msg_storage.get(mi, "")
             variable.data["MI"] = mi + 1
-        
-        # Default move: src to dest
-        # dest can be (address, storage_object) or just address if we assume storage
+
         if isinstance(dest, tuple):
             addr, storage = dest
             storage.store(addr, src)
-        else:
-            # Fallback if dest is just an address, assume register for now or handled elsewhere
-            pass
 
     @classmethod
     def execute(cls, result, opcode):
-        """Requirement VI.4: Perform Execute operations."""
         write_bit = int(opcode[1])
         category = opcode[2:]
-        
+
         if write_bit == 1:
-            # Dyadic operations with write: MOD, ADD, SUB, MUL, DIV, CMP
-            # result is a tuple (op1_val, op2_val)
             op1_val, op2_val = result
-            
-            if category == "000":  # MOD
+            if category == "000":
                 return op1_val % op2_val
-            elif category == "001":  # ADD
+            elif category == "001":
                 return op1_val + op2_val
-            elif category == "010":  # SUB
+            elif category == "010":
                 return op1_val - op2_val
-            elif category == "011":  # MUL
+            elif category == "011":
                 return op1_val * op2_val
-            elif category == "100":  # DIV
+            elif category == "100":
                 if op2_val == 0:
                     exc = cls.exception('DivByZero', (op1_val, op2_val))
                     return exc.getReturn()
                 return op1_val / op2_val
-            else:
-                return None
-        else:
-            # Jump operations: JEQ, JNE, JLT, JLE, JGT, JGE, JMP
-            # result is the target address (op1 effective address)
-            # We need to check the jump condition based on JR value
-            jr_val = register.load(int(variable.load("JR")))
-            
-            should_jump = False
-            if category == "000":  # JEQ: Jump if JR == 0
-                should_jump = (jr_val == 0)
-            elif category == "001":  # JNE: Jump if JR != 0
-                should_jump = (jr_val != 0)
-            elif category == "010":  # JLT: Jump if JR < 0
-                should_jump = (jr_val < 0)
-            elif category == "011":  # JLE: Jump if JR <= 0
-                should_jump = (jr_val <= 0)
-            elif category == "100":  # JGT: Jump if JR > 0
-                should_jump = (jr_val > 0)
-            elif category == "101":  # JGE: Jump if JR >= 0
-                should_jump = (jr_val >= 0)
-            elif category == "110":  # JMP: Unconditional jump
-                should_jump = True
-            
-            if should_jump:
-                # Return the target address to be set as new PC
-                return result
-            else:
-                # Don't jump; return None or current PC
-                return None
+            return None
+
+        jr_val = register.load(int(variable.load("JR")))
+        should_jump = False
+        if category == "000":
+            should_jump = (jr_val == 0)
+        elif category == "001":
+            should_jump = (jr_val != 0)
+        elif category == "010":
+            should_jump = (jr_val < 0)
+        elif category == "011":
+            should_jump = (jr_val <= 0)
+        elif category == "100":
+            should_jump = (jr_val > 0)
+        elif category == "101":
+            should_jump = (jr_val >= 0)
+        elif category == "110":
+            should_jump = True
+
+        return result if should_jump else None
 
     @classmethod
     def getOp(cls, inscode):
-        """Requirement VI.5: Gets effective address and storage type."""
-        # inscode is 10 bits or 16 bits if immediate
         if len(inscode) == 16:
-            # alpha: immediate - return the decoded value directly
             return AddressingMode.immediate(inscode)
-        
-        # Standard 10-bit operand code: Mode(3) + Addr(7)
+
         mode = inscode[:3]
         addr_bits = inscode[3:]
         addr_int = int(addr_bits, 2)
-        
-        # Convert address to Half Precision binary format for addressing mode methods
         hp_addr = HalfPrecision.hpdec2bin(addr_int)
-        
-        # Call appropriate addressing mode based on mode bits
-        if mode == "000":  # Register addressing
+
+        if mode == "000":
             return AddressingMode.register(hp_addr)
-        elif mode == "001":  # Register indirect
+        elif mode == "001":
             return AddressingMode.register_indirect(hp_addr)
-        elif mode == "010":  # Direct addressing
+        elif mode == "010":
             return AddressingMode.direct(hp_addr)
-        elif mode == "011":  # Indirect addressing
+        elif mode == "011":
             return AddressingMode.indirect(hp_addr)
-        elif mode == "100":  # Indexed with register/memory displacement
-            # First bit: 0=register displacement, 1=memory displacement
-            # Remaining 6 bits: displacement address
+        elif mode == "100":
             disp_type = addr_bits[0]
             disp_addr = int(addr_bits[1:], 2)
-            if disp_type == "0":  # Register displacement
-                disp = register.load(disp_addr)
-            else:  # Memory displacement
-                disp = memory.load(disp_addr)
+            disp = register.load(disp_addr) if disp_type == "0" else memory.load(disp_addr)
             return AddressingMode.indexed(disp)
-        elif mode == "101":  # Indexed with integer displacement
-            # First bit: 0=positive, 1=negative
+        elif mode == "101":
             sign_bit = addr_bits[0]
-            disp_val = int(addr_bits[1:], 2)
-            disp = disp_val if sign_bit == "0" else -disp_val
+            disp = int(addr_bits[1:], 2)
+            if sign_bit == "1":
+                disp = -disp
             return AddressingMode.indexed(disp)
-        elif mode == "110":  # Auto-increment
+        elif mode == "110":
             return AddressingMode.autoinc(hp_addr)
-        elif mode == "111":  # Auto-decrement
+        elif mode == "111":
             return AddressingMode.autodec(hp_addr)
-        
+
         return None
 
     @classmethod
     def run(cls):
-        """Requirement VI.6: Execute Instruction Codes starting from address in IR."""
-        
         while True:
-            # Gets value of IR (current instruction register)
             ir_addr = variable.load("IR")
             ir_ptr = int(register.load(ir_addr))
             inscode = memory.load(ir_ptr)
-            
-            # Break if not 32-bit or all zeros (end of program)
             if not isinstance(inscode, str) or len(inscode) != 32 or inscode == "0"*32:
                 break
-            
-            # Parse instruction bits
-            opcode = inscode[0:5]        # 5 bits: opcode
-            ib = inscode[5]              # 1 bit: immediate flag for Op2
-            op1_code = inscode[6:16]     # 10 bits: Op1 addressing mode + address
-            rb = inscode[16]             # 1 bit: relative/based flag (or HP sign if ib=1)
-            op2_code = inscode[17:27]    # 10 bits: Op2 addressing mode + address
-            extra = inscode[27:32]       # 5 bits: extra bits for immediate
-            
+
+            opcode = inscode[0:5]
+            ib = inscode[5]
+            op1_code = inscode[6:16]
+            rb = inscode[16]
+            op2_code = inscode[17:27]
+            extra = inscode[27:32]
+
             execute_bit = int(opcode[0])
             write_bit = int(opcode[1])
-            
-            # Get Operand 1 (always 10-bit addressing mode code)
             op1_result = cls.getOp(op1_code)
-            
-            # Get Operand 2 (depends on ib/rb flags)
+
             if ib == "1":
-                # Immediate addressing: combine rb + op2_code + extra into 16-bit HP
                 hp_immediate = rb + op2_code + extra
                 op2_result = cls.getOp(hp_immediate)
             elif rb == "1":
-                # Relative or Based addressing mode
                 mode_bits = op2_code[:3]
                 addr_bits = op2_code[3:]
-                
-                # Decode displacement based on mode
-                if mode_bits == "000" or mode_bits == "001":  # Based addressing
-                    # Mode 000: displacement from register
-                    # Mode 001: displacement from memory
-                    if mode_bits == "000":
-                        disp_addr = int(addr_bits, 2)
-                        disp = register.load(disp_addr)
-                    else:
-                        disp_addr = int(addr_bits, 2)
-                        disp = memory.load(disp_addr)
+                if mode_bits in ("000", "001"):
+                    disp_addr = int(addr_bits, 2)
+                    disp = register.load(disp_addr) if mode_bits == "000" else memory.load(disp_addr)
                     op2_result = AddressingMode.based(disp)
-                
-                else:  # Relative addressing (modes 100-111 in spec)
-                    # Mode 100: positive integer displacement
-                    # Mode 101: negative integer displacement
+                elif mode_bits in ("010", "011"):
+                    disp = int(addr_bits, 2)
+                    if mode_bits == "011":
+                        disp = -disp
+                    op2_result = AddressingMode.based(disp)
+                else:
                     disp = int(addr_bits, 2)
                     if mode_bits in ("011", "111"):
                         disp = -disp
                     op2_result = AddressingMode.relative(disp)
             else:
-                # Normal addressing mode
                 op2_result = cls.getOp(op2_code)
-            
-            # Extract values from results (handle both tuple and scalar returns)
+
             def extract_value(result):
-                """Extract value from addressing mode result."""
                 if result is None:
                     return 0
-                elif isinstance(result, tuple):
-                    return result[1]  # Return the value component
-                else:
-                    return result  # Return scalar value directly
-            
+                return result[1] if isinstance(result, tuple) else result
+
             def extract_addr(result):
-                """Extract effective address from addressing mode result."""
                 if result is None:
                     return 0
-                elif isinstance(result, tuple):
-                    return result[0]  # Return the address component
-                else:
-                    return result  # Return as address if scalar
-            
-            # Execute based on instruction type
+                return result[0] if isinstance(result, tuple) else result
+
             if execute_bit == 1 and write_bit == 1:
-                # Dyadic operations: ADD, SUB, MUL, DIV, MOD, CMP, CB, CF
                 val1 = extract_value(op1_result)
                 val2 = extract_value(op2_result)
                 result = cls.execute((val1, val2), opcode)
-                
-                # Write result back to Op1 destination
                 if result is not None:
-                    addr1, storage1 = op1_result[0], op1_result[2] if len(op1_result) > 2 else memory
-                    cls.write((int(addr1), storage1), result)
+                    addr1 = int(op1_result[0])
+                    storage1 = op1_result[2] if len(op1_result) > 2 else memory
+                    cls.write((addr1, storage1), result)
             
             elif execute_bit == 1 and write_bit == 0:
                 # Jump operations: JEQ, JNE, JLT, JLE, JGT, JGE, JMP
@@ -308,7 +245,6 @@ class Program:
 
 if __name__ == "__main__":
     import sys
-    # Requirement VII.7: Running from file
     if len(sys.argv) > 1:
         filename = sys.argv[1]
         with open(filename, 'r') as f:
