@@ -1,0 +1,15 @@
+x Test JEQ when condition is TRUE
+x Set JR to 0 first
+MOV JR 0
+x Now JEQ should jump
+JEQ B1
+
+x This should be skipped
+PRNT ACC
+
+x This should execute  
+CB B1
+MOV R1 42
+PRNT R1
+
+EOP

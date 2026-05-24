@@ -1,0 +1,28 @@
+x Comprehensive test suite for CMSC 132 project
+
+MOV R1 10
+MOV R2 3
+ADD R1 R2
+PRNT R1
+
+x Test SUB
+MOV R3 5
+SUB R1 R3
+PRNT R1
+
+x Test MUL
+MOV R4 2
+MUL R1 R4
+PRNT R1
+
+x Test DIV
+MOV R5 4
+DIV R1 R5
+PRNT R1
+
+x Test MOD
+MOV R6 3
+MOD R1 R6
+PRNT R1
+
+EOP

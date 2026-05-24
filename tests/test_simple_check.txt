@@ -1,0 +1,3 @@
+MOV R1 5
+PRNT R1
+EOP

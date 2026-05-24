@@ -1,0 +1,17 @@
+x Test register addressing and indirect
+MOV R1 15
+MOV R2 A
+ADD R2 R1
+PRNT R2
+
+x Test direct memory addressing
+MOV A 7
+PRNT A
+
+x Test division by zero edge case
+MOV R3 10
+MOV R4 0
+DIV R3 R4
+PRNT R3
+
+EOP

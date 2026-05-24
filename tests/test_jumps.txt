@@ -1,0 +1,14 @@
+x Test CMP and JEQ (jump if equal)
+MOV R1 5
+MOV R2 5
+CMP R1
+JEQ B1
+
+x Should not print this if jump works
+PRNT ACC
+
+x Jump target block
+CB B1
+PRNT R2
+
+EOP
